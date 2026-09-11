@@ -24,7 +24,7 @@ export default function App() {
   const [jobs, setJobs] = useState([])
   const [historyLoaded, setHistoryLoaded] = useState(false)
   const [specOpen, setSpecOpen] = useState(false)
-  const [defaults, setDefaults] = useState({ bleedMm: 3, fold: 'none', cmykPreview: true })
+  const [defaults, setDefaults] = useState({ bleedMm: 3, fold: 'none', flattenToRaster: false })
   const [iccProfile, setIccProfile] = useState(null)
   const hydrated = useRef(false)
 
@@ -108,11 +108,11 @@ export default function App() {
     patchJob(id, { status: 'processing', progressStep: 'render', progressMessage: 'Starting…' })
     try {
       let activeProfile = iccProfile
-      if (!activeProfile && job.options.cmykPreview) {
+      if (!activeProfile) {
         try {
           activeProfile = await loadDefaultIccProfile()
         } catch (err) {
-          activeProfile = null // falls back to the formula-based preview inside processPdf
+          activeProfile = null // falls back to the formula-based ink estimate inside processPdf
         }
       }
 
@@ -123,9 +123,9 @@ export default function App() {
           jobName: job.name,
           bleedMm: job.options.bleedMm,
           fold: job.options.fold,
-          cmykPreview: job.options.cmykPreview,
+          flattenToRaster: job.options.flattenToRaster,
           sizeOverride: job.sizeOverride,
-          iccProfile: job.options.cmykPreview && activeProfile ? { bytes: activeProfile.bytes, name: activeProfile.name } : null,
+          iccProfile: activeProfile ? { bytes: activeProfile.bytes, name: activeProfile.name } : null,
         },
         onProgress: ({ step, message }) => patchJob(id, { progressStep: step, progressMessage: message }),
       })
@@ -305,14 +305,17 @@ export default function App() {
               <label className="flex items-center gap-2 text-xs text-zink/55">
                 <input
                   type="checkbox"
-                  checked={defaults.cmykPreview}
-                  onChange={(e) => setDefaults((d) => ({ ...d, cmykPreview: e.target.checked }))}
+                  checked={defaults.flattenToRaster}
+                  onChange={(e) => setDefaults((d) => ({ ...d, flattenToRaster: e.target.checked }))}
                   className="h-4 w-4 accent-zblue-500"
                 />
-                CMYK preview conversion by default
+                Flatten & convert to CMYK by default
               </label>
               <p className="text-[11px] text-zink/35 leading-relaxed">
-                These apply to new uploads only. Each job can still override them before processing.
+                Off (default): artwork stays sharp vector — bleed, marks and colour profile are added around it. On:
+                rasterizes everything and bakes the CMYK conversion into pixels — sharper zoom is traded for
+                pre-converted colour. These apply to new uploads only; each job can still override them before
+                processing.
               </p>
               </div>
             </div>

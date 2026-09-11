@@ -5,6 +5,7 @@ import {
   renderPageToCanvas,
   getBasePageGeometry,
   extrudeBleed,
+  cropBleedStrips,
   applyCmykPreview,
   estimateInkCoverage,
   decodeQrFromCanvas,
@@ -24,6 +25,7 @@ import { createCmykConverter } from './colorEngine'
 
 const MARGIN_MM = 15
 const SUSPICIOUS_SIZE_MM = 400
+const VERIFY_DPI_CAP = 150 // the final QR re-check only needs to be legible, not press-resolution
 
 export async function inspectPdf(file) {
   const buffer = await file.arrayBuffer()
@@ -50,14 +52,18 @@ export async function processPdf({ file, buffer, options, onProgress }) {
     jobName,
     bleedMm = 3,
     fold = 'none',
-    cmykPreview = true,
     sizeOverride = null, // { widthMm, heightMm } applied uniformly to every page
     iccProfile = null, // { bytes, name } — a real CMYK output profile, if the user supplied one
   } = options
+  // default: keep artwork as sharp vector; true = old rasterize-everything path.
+  // May be forced true below if the source can't be parsed for vector embedding.
+  let flattenToRaster = options.flattenToRaster ?? false
 
-  const report = { jobName, bleedMm, fold, cmykPreview, pages: [], warnings: [], colorEngine: 'formula' }
+  const report = { jobName, bleedMm, fold, pages: [], warnings: [], colorEngine: 'formula' }
   const progress = (payload) => onProgress && onProgress(payload)
 
+  // The converter is used for real ink (TAC) measurement in both modes, and
+  // additionally to convert pixels when flattening to raster.
   let converter = null
   if (iccProfile?.bytes) {
     progress({ step: 'cmyk', pageIndex: 0, pageCount: 1, message: `Loading ${iccProfile.name || 'colour profile'}…` })
@@ -66,24 +72,41 @@ export async function processPdf({ file, buffer, options, onProgress }) {
       report.colorEngine = 'icc'
       report.iccProfileName = converter.name
     } catch (err) {
-      report.warnings.push(`Could not use the supplied colour profile (${err.message}) — fell back to the formula-based preview.`)
+      report.warnings.push(`Could not use the supplied colour profile (${err.message}) — fell back to the formula-based estimate.`)
     }
   }
 
   const srcBuffer = buffer || (await file.arrayBuffer())
   const pdfJsDoc = await loadPdfJsDoc(srcBuffer.slice(0))
+
+  let srcDoc = null
+  if (!flattenToRaster) {
+    try {
+      srcDoc = await PDFDocument.load(srcBuffer.slice(0))
+    } catch (err) {
+      flattenToRaster = true
+      report.warnings.push(`Could not parse this PDF for vector embedding (${err.message}) — fell back to rasterizing from source.`)
+    }
+  }
+
   const pageCount = pdfJsDoc.numPages
   report.pageCount = pageCount
+  report.flattenToRaster = flattenToRaster
 
   const outDoc = await PDFDocument.create()
   outDoc.setTitle(jobName)
   outDoc.setProducer('Zopper Printables Studio')
   outDoc.setCreator('Zopper Printables Studio')
-  outDoc.setSubject('Print-ready export (FOGRA39L target, 3mm bleed synthesised)')
+  outDoc.setSubject(
+    flattenToRaster
+      ? 'Print-ready export (rasterized, 3mm bleed synthesised)'
+      : 'Print-ready export (vector artwork preserved, 3mm bleed synthesised)',
+  )
   const font = await outDoc.embedFont(StandardFonts.Helvetica)
 
   const marginPt = mmToPt(MARGIN_MM)
   const bleedPt = mmToPt(bleedMm)
+  const pageRecords = []
 
   try {
     for (let i = 0; i < pageCount; i++) {
@@ -108,37 +131,16 @@ export async function processPdf({ file, buffer, options, onProgress }) {
       progress({ step: 'bleed', pageIndex: i, pageCount, message: `Synthesising ${bleedMm}mm bleed on page ${i + 1}` })
       const pxPerMm = dpi / 25.4
       const bleedPx = Math.round(bleedMm * pxPerMm)
-      let finalCanvas = extrudeBleed(sourceCanvas, bleedPx)
-
-      if (cmykPreview) {
-        progress({
-          step: 'cmyk',
-          pageIndex: i,
-          pageCount,
-          message: converter
-            ? `Converting page ${i + 1} through ${converter.name}`
-            : `Applying CMYK preview to page ${i + 1}`,
-        })
-        finalCanvas = converter ? converter.applyToCanvas(finalCanvas) : applyCmykPreview(finalCanvas)
-      }
+      const bledCanvas = extrudeBleed(sourceCanvas, bleedPx)
 
       progress({ step: 'ink', pageIndex: i, pageCount, message: `Estimating ink coverage on page ${i + 1}` })
       const ink = converter ? converter.sampleInkCoverage(sourceCanvas) : estimateInkCoverage(sourceCanvas)
 
-      progress({ step: 'qr-final', pageIndex: i, pageCount, message: `Re-verifying QR on finished page ${i + 1}` })
-      const qrFinal = decodeQrFromCanvas(finalCanvas)
-
-      progress({ step: 'marks', pageIndex: i, pageCount, message: `Placing marks & boxes on page ${i + 1}` })
-      const pngBytes = await canvasToPngBytes(finalCanvas)
-      const png = await outDoc.embedPng(pngBytes)
+      progress({ step: 'marks', pageIndex: i, pageCount, message: `Placing artwork, marks & boxes on page ${i + 1}` })
 
       const mediaW = trimWpt + bleedPt * 2 + marginPt * 2
       const mediaH = trimHpt + bleedPt * 2 + marginPt * 2
       const page = outDoc.addPage([mediaW, mediaH])
-
-      const imgW = trimWpt + bleedPt * 2
-      const imgH = trimHpt + bleedPt * 2
-      page.drawImage(png, { x: marginPt, y: marginPt, width: imgW, height: imgH })
 
       const bleedX0 = marginPt
       const bleedY0 = marginPt
@@ -148,6 +150,38 @@ export async function processPdf({ file, buffer, options, onProgress }) {
       const trimY0 = bleedY0 + bleedPt
       const trimX1 = bleedX1 - bleedPt
       const trimY1 = bleedY1 - bleedPt
+
+      if (flattenToRaster) {
+        progress({
+          step: 'cmyk',
+          pageIndex: i,
+          pageCount,
+          message: converter ? `Converting page ${i + 1} through ${converter.name}` : `Applying CMYK preview to page ${i + 1}`,
+        })
+        const convertedCanvas = converter ? converter.applyToCanvas(bledCanvas) : applyCmykPreview(bledCanvas)
+        const pngBytes = await canvasToPngBytes(convertedCanvas)
+        const png = await outDoc.embedPng(pngBytes)
+        page.drawImage(png, { x: marginPt, y: marginPt, width: trimWpt + bleedPt * 2, height: trimHpt + bleedPt * 2 })
+      } else {
+        const srcPage = srcDoc.getPages()[i]
+        const embeddedPage = await outDoc.embedPage(srcPage)
+        page.drawPage(embeddedPage, { x: trimX0, y: trimY0, width: trimWpt, height: trimHpt })
+
+        if (bleedPx > 0) {
+          const strips = cropBleedStrips(bledCanvas, bleedPx, sourceCanvas.width, sourceCanvas.height)
+          const placements = [
+            [strips.top, bleedX0, trimY1, bleedX1 - bleedX0, bleedPt],
+            [strips.bottom, bleedX0, bleedY0, bleedX1 - bleedX0, bleedPt],
+            [strips.left, bleedX0, trimY0, bleedPt, trimY1 - trimY0],
+            [strips.right, trimX1, trimY0, bleedPt, trimY1 - trimY0],
+          ]
+          for (const [canvas, x, y, width, height] of placements) {
+            const pngBytes = await canvasToPngBytes(canvas)
+            const png = await outDoc.embedPng(pngBytes)
+            page.drawImage(png, { x, y, width, height })
+          }
+        }
+      }
 
       setPdfBox(page, 'BleedBox', bleedX0, bleedY0, bleedX1, bleedY1)
       setPdfBox(page, 'TrimBox', trimX0, trimY0, trimX1, trimY1)
@@ -161,40 +195,49 @@ export async function processPdf({ file, buffer, options, onProgress }) {
 
       const trimWmm = Math.round(ptToMm(trimWpt) * 10) / 10
       const trimHmm = Math.round(ptToMm(trimHpt) * 10) / 10
-      const colorLabel = converter ? `${converter.name} (certified ICC)` : 'DeviceCMYK preview (FOGRA39L target)'
+      const colorLabel = flattenToRaster
+        ? converter
+          ? `${converter.name} (certified ICC, flattened)`
+          : 'DeviceCMYK preview (flattened)'
+        : `Vector artwork · ${converter ? converter.name : 'FOGRA39L'} target declared`
       await drawCaption(
         page,
         font,
         `${jobName} · Page ${i + 1}/${pageCount} · ${colorLabel} · Trim ${trimWmm}×${trimHmm}mm · Bleed ${bleedMm}mm`,
       )
 
-      const warnings = []
-      if (ink.maxTac > 330) warnings.push(`Ink coverage peaks at ${ink.maxTac}% TAC, above the 330% coated ceiling.`)
-      if (qrSource.found && qrFinal.found && qrSource.payload !== qrFinal.payload) {
-        warnings.push('QR payload changed between source and finished render — verify manually.')
-      }
-      if (qrSource.found && !qrFinal.found) {
-        warnings.push('QR decoded from source but not from the finished page — verify manually.')
-      }
-
-      report.pages.push({
-        index: i,
-        trimWmm,
-        trimHmm,
-        dpi: Math.round(dpi),
-        ink,
-        qrSource,
-        qrFinal,
-        warnings,
-      })
+      pageRecords.push({ index: i, trimWmm, trimHmm, dpi: Math.round(dpi), ink, qrSource })
     }
 
     progress({ step: 'assemble', pageIndex: pageCount - 1, pageCount, message: 'Embedding output intent & finalising document' })
     setOutputIntent(outDoc, converter ? { name: converter.name, bytes: iccProfile.bytes } : null)
 
     const bytes = await outDoc.save()
-    progress({ step: 'done', pageIndex: pageCount - 1, pageCount, message: 'Print-ready file assembled' })
 
+    // pdf.js may transfer/detach the buffer it's given to its worker, so hand
+    // it a copy — `bytes` itself is returned below and must stay intact for
+    // the download.
+    const verifyDoc = await loadPdfJsDoc(bytes.slice(0))
+    for (let i = 0; i < pageCount; i++) {
+      progress({ step: 'verify', pageIndex: i, pageCount, message: `Re-verifying QR on the finished page ${i + 1}` })
+      const record = pageRecords[i]
+      const checkDpi = Math.min(record.dpi, VERIFY_DPI_CAP)
+      const checkCanvas = await renderPageToCanvas(verifyDoc, i, checkDpi)
+      const qrFinal = decodeQrFromCanvas(checkCanvas)
+
+      const warnings = []
+      if (record.ink.maxTac > 330) warnings.push(`Ink coverage peaks at ${record.ink.maxTac}% TAC, above the 330% coated ceiling.`)
+      if (record.qrSource.found && qrFinal.found && record.qrSource.payload !== qrFinal.payload) {
+        warnings.push('QR payload changed between source and finished file — verify manually.')
+      }
+      if (record.qrSource.found && !qrFinal.found) {
+        warnings.push('QR decoded from source but not from the finished file — verify manually.')
+      }
+
+      report.pages.push({ ...record, qrFinal, warnings })
+    }
+
+    progress({ step: 'done', pageIndex: pageCount - 1, pageCount, message: 'Print-ready file assembled' })
     return { bytes, report }
   } finally {
     if (converter) converter.dispose()

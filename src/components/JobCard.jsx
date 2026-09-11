@@ -10,6 +10,7 @@ import {
   ChevronUp,
   QrCode,
   Droplet,
+  ZoomIn,
   MoreVertical,
   Trash2,
 } from 'lucide-react'
@@ -19,11 +20,11 @@ const STEP_DEFS = [
   { key: 'render', label: 'Rendering pages' },
   { key: 'qr-source', label: 'Scanning QR codes (source)' },
   { key: 'bleed', label: 'Synthesising bleed (edge extrusion)' },
-  { key: 'cmyk', label: 'CMYK preview conversion' },
+  { key: 'cmyk', label: 'Flattening & converting to CMYK' },
   { key: 'ink', label: 'Estimating ink coverage' },
-  { key: 'qr-final', label: 'Re-verifying QR (finished page)' },
-  { key: 'marks', label: 'Placing marks, boxes & caption' },
+  { key: 'marks', label: 'Placing artwork, marks & boxes' },
   { key: 'assemble', label: 'Embedding output intent & assembling' },
+  { key: 'verify', label: 'Re-verifying QR on the finished file' },
 ]
 
 function StepRow({ label, state, detail }) {
@@ -130,7 +131,7 @@ export default function JobCard({ job, onConfirmSize, onUpdateOptions, onProcess
               onClick={() => onConfirmSize(job.id, { widthMm: sizeW, heightMm: sizeH })}
               className="rounded-xl bg-zorange-500 hover:bg-zorange-600 text-white text-sm font-semibold px-4 py-2 transition-colors"
             >
-              Confirm &amp; continue
+              Confirm & continue
             </button>
           </div>
         </div>
@@ -166,12 +167,12 @@ export default function JobCard({ job, onConfirmSize, onUpdateOptions, onProcess
             <span className="flex items-center gap-2 mt-1 py-1.5">
               <input
                 type="checkbox"
-                checked={job.options.cmykPreview}
+                checked={job.options.flattenToRaster}
                 disabled={job.status !== 'ready'}
-                onChange={(e) => onUpdateOptions(job.id, { cmykPreview: e.target.checked })}
+                onChange={(e) => onUpdateOptions(job.id, { flattenToRaster: e.target.checked })}
                 className="h-4 w-4 accent-zblue-500"
               />
-              CMYK preview
+              Flatten & convert
             </span>
           </label>
         </div>
@@ -188,7 +189,7 @@ export default function JobCard({ job, onConfirmSize, onUpdateOptions, onProcess
 
       {(job.status === 'processing' || (expanded && job.status === 'done')) && (
         <div className="mt-4 rounded-2xl bg-white/60 border border-zink/5 px-4 py-3">
-          {STEP_DEFS.filter((s) => s.key !== 'cmyk' || job.options.cmykPreview).map((s) => {
+          {STEP_DEFS.filter((s) => s.key !== 'cmyk' || job.options.flattenToRaster).map((s) => {
             const idx = STEP_DEFS.findIndex((d) => d.key === s.key)
             const state = job.status === 'done' ? 'done' : idx < activeStepIdx ? 'done' : idx === activeStepIdx ? 'active' : 'pending'
             return <StepRow key={s.key} label={s.label} state={state} detail={job.progressMessage} />
@@ -205,6 +206,11 @@ export default function JobCard({ job, onConfirmSize, onUpdateOptions, onProcess
       {job.status === 'done' && job.result && (
         <div className="mt-4">
           <div className="flex flex-wrap items-center gap-2">
+            {!job.result.report.flattenToRaster && (
+              <span className="inline-flex items-center gap-1.5 rounded-full bg-zblue-50 text-zblue-700 text-[11px] font-medium px-3 py-1.5">
+                <ZoomIn size={12} /> Vector (sharp)
+              </span>
+            )}
             {job.result.report.colorEngine === 'icc' && (
               <span
                 className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 text-emerald-700 text-[11px] font-medium px-3 py-1.5"

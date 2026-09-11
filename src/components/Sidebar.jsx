@@ -55,7 +55,7 @@ export default function Sidebar({ active, onNavigate }) {
         <div className="absolute -right-6 -top-6 h-20 w-20 rounded-full bg-zorange-400/40 blur-2xl" />
         <p className="text-sm font-semibold relative">Press-ready, every time</p>
         <p className="text-xs text-white/70 mt-1.5 relative leading-relaxed">
-          Bleed, marks &amp; CMYK preview generated to the Zopper print spec.
+          Sharp vector artwork with bleed, marks & certified colour, to the Zopper print spec.
         </p>
       </div>
     </aside>

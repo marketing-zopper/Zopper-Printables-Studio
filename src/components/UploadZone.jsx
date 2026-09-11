@@ -42,7 +42,7 @@ export default function UploadZone({ onFiles }) {
       </div>
       <p className="font-semibold text-zink">Drop a PDF here, or click to browse</p>
       <p className="text-xs text-zink/45 mt-1.5 flex items-center justify-center gap-1.5">
-        <FileText size={13} /> Bleed synthesis, trim &amp; registration marks, CMYK preview, QR &amp; ink checks — all in your browser
+        <FileText size={13} /> Sharp vector artwork, bleed & registration marks, certified CMYK, QR & ink checks — all in your browser
       </p>
     </div>
   )

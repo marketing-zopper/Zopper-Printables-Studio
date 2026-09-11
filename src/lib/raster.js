@@ -64,6 +64,27 @@ export function extrudeBleed(srcCanvas, bleedPx) {
   return out
 }
 
+// Crops the four bleed-margin bands out of a bled canvas (top/bottom span
+// full width including corners; left/right span only the trim height).
+// Used to keep bleed synthesis raster-only while the artwork itself stays
+// vector — nobody zooms into the strip that gets trimmed off anyway.
+export function cropBleedStrips(bledCanvas, bleedPx, origW, origH) {
+  const crop = (sx, sy, sw, sh) => {
+    const c = document.createElement('canvas')
+    c.width = sw
+    c.height = sh
+    c.getContext('2d').drawImage(bledCanvas, sx, sy, sw, sh, 0, 0, sw, sh)
+    return c
+  }
+  const fullW = origW + bleedPx * 2
+  return {
+    top: crop(0, 0, fullW, bleedPx),
+    bottom: crop(0, bleedPx + origH, fullW, bleedPx),
+    left: crop(0, bleedPx, bleedPx, origH),
+    right: crop(bleedPx + origW, bleedPx, bleedPx, origH),
+  }
+}
+
 function rgbToCmyk(r, g, b) {
   const k = 1 - Math.max(r, g, b) / 255
   if (k >= 1) return { c: 0, m: 0, y: 0, k: 1 }
