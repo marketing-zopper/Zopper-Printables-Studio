@@ -105,15 +105,30 @@ export async function drawCaption(page, font, text) {
   })
 }
 
-export function setOutputIntent(pdfDoc) {
+// With no ICC profile supplied, the file only *names* its colour target
+// (no embedded profile a RIP could actually load and honour). When a real
+// profile is provided, we embed the profile itself as an ICCBased stream —
+// this is what a preflight tool actually checks for a certified file.
+export function setOutputIntent(pdfDoc, icc = null) {
   const context = pdfDoc.context
-  const intent = context.obj({
+  const fields = {
     Type: PDFName.of('OutputIntent'),
     S: PDFName.of('GTS_PDFX'),
-    OutputConditionIdentifier: PDFString.of('FOGRA39'),
-    OutputCondition: PDFString.of('Coated FOGRA39 (ISO 12647-2:2004)'),
+    OutputConditionIdentifier: PDFString.of(icc?.name || 'FOGRA39'),
+    OutputCondition: PDFString.of(icc ? icc.name : 'Coated FOGRA39 (ISO 12647-2:2004)'),
     RegistryName: PDFString.of('http://www.color.org'),
-    Info: PDFString.of('FOGRA39L Coated target - relative colorimetric, black point compensation (preview build, no embedded ICC)'),
-  })
+    Info: PDFString.of(
+      icc
+        ? `${icc.name} - relative colorimetric, black point compensation, embedded ICC profile`
+        : 'FOGRA39L Coated target - relative colorimetric, black point compensation (preview build, no embedded ICC)',
+    ),
+  }
+
+  if (icc?.bytes) {
+    const profileStream = context.flateStream(icc.bytes, { N: 4, Alternate: PDFName.of('DeviceCMYK') })
+    fields.DestOutputProfile = context.register(profileStream)
+  }
+
+  const intent = context.obj(fields)
   pdfDoc.catalog.set(PDFName.of('OutputIntents'), context.obj([intent]))
 }

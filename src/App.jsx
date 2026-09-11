@@ -12,6 +12,9 @@ import SpecModal from './components/SpecModal'
 import SpecContent from './components/SpecContent'
 import { inspectPdf, processPdf } from './lib/pdfEngine'
 import { saveFinishedJob, deleteFinishedJob, loadFinishedJobs } from './lib/jobStore'
+import { loadIccProfile } from './lib/profileStore'
+import { loadDefaultIccProfile } from './lib/defaultProfile'
+import ColorProfileCard from './components/ColorProfileCard'
 
 const makeJobId = () => `job-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 
@@ -22,11 +25,13 @@ export default function App() {
   const [historyLoaded, setHistoryLoaded] = useState(false)
   const [specOpen, setSpecOpen] = useState(false)
   const [defaults, setDefaults] = useState({ bleedMm: 3, fold: 'none', cmykPreview: true })
+  const [iccProfile, setIccProfile] = useState(null)
   const hydrated = useRef(false)
 
   useEffect(() => {
     if (hydrated.current) return
     hydrated.current = true
+    loadIccProfile().then((record) => setIccProfile(record))
     loadFinishedJobs().then((records) => {
       const restored = records
         .sort((a, b) => b.createdAt - a.createdAt)
@@ -102,6 +107,15 @@ export default function App() {
     if (!job) return
     patchJob(id, { status: 'processing', progressStep: 'render', progressMessage: 'Starting…' })
     try {
+      let activeProfile = iccProfile
+      if (!activeProfile && job.options.cmykPreview) {
+        try {
+          activeProfile = await loadDefaultIccProfile()
+        } catch (err) {
+          activeProfile = null // falls back to the formula-based preview inside processPdf
+        }
+      }
+
       const { bytes, report } = await processPdf({
         file: job.file,
         buffer: job.sizeInfo.buffer,
@@ -111,6 +125,7 @@ export default function App() {
           fold: job.options.fold,
           cmykPreview: job.options.cmykPreview,
           sizeOverride: job.sizeOverride,
+          iccProfile: job.options.cmykPreview && activeProfile ? { bytes: activeProfile.bytes, name: activeProfile.name } : null,
         },
         onProgress: ({ step, message }) => patchJob(id, { progressStep: step, progressMessage: message }),
       })
@@ -259,7 +274,11 @@ export default function App() {
           )}
 
           {active === 'settings' && (
-            <div className="max-w-md glass-card rounded-3xl shadow-card p-7 space-y-5">
+            <div className="max-w-md space-y-6">
+              <div className="glass-card rounded-3xl shadow-card p-7">
+                <ColorProfileCard profile={iccProfile} onChange={setIccProfile} />
+              </div>
+              <div className="glass-card rounded-3xl shadow-card p-7 space-y-5">
               <p className="font-bold text-zink text-sm">Defaults for new jobs</p>
               <label className="block text-xs text-zink/55">
                 Bleed (mm)
@@ -295,6 +314,7 @@ export default function App() {
               <p className="text-[11px] text-zink/35 leading-relaxed">
                 These apply to new uploads only. Each job can still override them before processing.
               </p>
+              </div>
             </div>
           )}
         </main>

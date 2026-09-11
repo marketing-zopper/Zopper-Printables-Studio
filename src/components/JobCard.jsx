@@ -205,6 +205,14 @@ export default function JobCard({ job, onConfirmSize, onUpdateOptions, onProcess
       {job.status === 'done' && job.result && (
         <div className="mt-4">
           <div className="flex flex-wrap items-center gap-2">
+            {job.result.report.colorEngine === 'icc' && (
+              <span
+                className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 text-emerald-700 text-[11px] font-medium px-3 py-1.5"
+                title={job.result.report.iccProfileName}
+              >
+                <CheckCircle2 size={12} /> Certified ICC
+              </span>
+            )}
             <span className="inline-flex items-center gap-1.5 rounded-full bg-zblue-50 text-zblue-700 text-[11px] font-medium px-3 py-1.5">
               <Droplet size={12} /> Max ink {Math.max(...job.result.report.pages.map((p) => p.ink.maxTac))}% TAC
             </span>

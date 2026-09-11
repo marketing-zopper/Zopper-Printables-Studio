@@ -14,7 +14,8 @@
     "pdfjs-dist": "3.11.174",
     "pdf-lib": "^1.17.1",
     "jsqr": "^1.4.0",
-    "lucide-react": "^0.462.0"
+    "lucide-react": "^0.462.0",
+    "lcms-wasm": "^1.0.5"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.3.3",
