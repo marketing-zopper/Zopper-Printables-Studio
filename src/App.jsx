@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Files, Droplet, QrCode } from 'lucide-react'
 import GradientBlobs from './components/GradientBlobs'
 import Sidebar from './components/Sidebar'
@@ -11,15 +11,49 @@ import GuidelinesCard from './components/GuidelinesCard'
 import SpecModal from './components/SpecModal'
 import SpecContent from './components/SpecContent'
 import { inspectPdf, processPdf } from './lib/pdfEngine'
+import { saveFinishedJob, deleteFinishedJob, loadFinishedJobs } from './lib/jobStore'
 
-let jobSeq = 0
+const makeJobId = () => `job-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 
 export default function App() {
   const [active, setActive] = useState('dashboard')
   const [query, setQuery] = useState('')
   const [jobs, setJobs] = useState([])
+  const [historyLoaded, setHistoryLoaded] = useState(false)
   const [specOpen, setSpecOpen] = useState(false)
   const [defaults, setDefaults] = useState({ bleedMm: 3, fold: 'none', cmykPreview: true })
+  const hydrated = useRef(false)
+
+  useEffect(() => {
+    if (hydrated.current) return
+    hydrated.current = true
+    loadFinishedJobs().then((records) => {
+      const restored = records
+        .sort((a, b) => b.createdAt - a.createdAt)
+        .map((record) => {
+          const blob = new Blob([record.pdfBytes], { type: 'application/pdf' })
+          return {
+            id: record.id,
+            name: record.name,
+            status: 'done',
+            sizeInfo: record.sizeInfo,
+            sizeOverride: null,
+            options: record.options,
+            progressStep: 'done',
+            progressMessage: '',
+            result: { bytes: record.pdfBytes, report: record.report },
+            downloadUrl: URL.createObjectURL(blob),
+            error: null,
+            createdAt: record.createdAt,
+          }
+        })
+      setJobs((prev) => {
+        const existingIds = new Set(prev.map((j) => j.id))
+        return [...restored.filter((j) => !existingIds.has(j.id)), ...prev]
+      })
+      setHistoryLoaded(true)
+    })
+  }, [])
 
   const patchJob = (id, patch) => {
     setJobs((prev) => prev.map((j) => (j.id === id ? { ...j, ...(typeof patch === 'function' ? patch(j) : patch) } : j)))
@@ -27,7 +61,7 @@ export default function App() {
 
   const handleFiles = (files) => {
     files.forEach((file) => {
-      const id = `job-${++jobSeq}`
+      const id = makeJobId()
       const job = {
         id,
         file,
@@ -82,7 +116,21 @@ export default function App() {
       })
       const blob = new Blob([bytes], { type: 'application/pdf' })
       const url = URL.createObjectURL(blob)
-      patchJob(id, { status: 'done', result: { bytes, report }, downloadUrl: url })
+      const createdAt = Date.now()
+      patchJob(id, { status: 'done', result: { bytes, report }, downloadUrl: url, createdAt })
+      saveFinishedJob({
+        id,
+        name: job.name,
+        createdAt,
+        sizeInfo: {
+          pageCount: job.sizeInfo.pageCount,
+          widthMm: job.sizeInfo.widthMm,
+          heightMm: job.sizeInfo.heightMm,
+        },
+        options: job.options,
+        report,
+        pdfBytes: bytes,
+      })
     } catch (err) {
       patchJob(id, { status: 'error', error: err.message || 'Processing failed.' })
     }
@@ -105,9 +153,10 @@ export default function App() {
       if (job?.downloadUrl) URL.revokeObjectURL(job.downloadUrl)
       return prev.filter((j) => j.id !== id)
     })
+    deleteFinishedJob(id)
   }
 
-  const doneJobs = jobs.filter((j) => j.status === 'done')
+  const doneJobs = jobs.filter((j) => j.status === 'done').sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
 
   const filteredJobHistory = useMemo(
     () => doneJobs.filter((j) => j.name.toLowerCase().includes(query.toLowerCase())),
@@ -148,7 +197,7 @@ export default function App() {
                       onDelete={handleDelete}
                     />
                   ))}
-                  {doneJobs.length === 0 && (
+                  {historyLoaded && doneJobs.length === 0 && (
                     <p className="text-xs text-zink/40 text-center py-6">
                       No completed jobs yet — drop a PDF above, finish processing it on the Upload page, and it'll show up here.
                     </p>
@@ -184,7 +233,7 @@ export default function App() {
 
           {active === 'jobs' && (
             <div className="max-w-3xl mx-auto space-y-4">
-              {filteredJobHistory.length === 0 && (
+              {historyLoaded && filteredJobHistory.length === 0 && (
                 <p className="text-xs text-zink/40 text-center py-10">
                   {doneJobs.length === 0 ? 'No finished jobs yet — job history only shows files that finished processing into a print-ready PDF.' : 'No jobs match your search.'}
                 </p>
