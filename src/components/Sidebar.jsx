@@ -4,6 +4,7 @@ import {
   ListChecks,
   FileCog,
   Settings,
+  UserCircle,
 } from 'lucide-react'
 import logo from '../assets/zopper-logo.png'
 
@@ -12,6 +13,7 @@ const NAV = [
   { key: 'upload', label: 'Upload', icon: UploadCloud },
   { key: 'jobs', label: 'Job History', icon: ListChecks },
   { key: 'spec', label: 'Print Spec', icon: FileCog },
+  { key: 'profile', label: 'Profile', icon: UserCircle },
   { key: 'settings', label: 'Settings', icon: Settings },
 ]
 

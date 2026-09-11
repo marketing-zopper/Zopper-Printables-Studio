@@ -10,15 +10,39 @@ import SpecPanel from './components/SpecPanel'
 import GuidelinesCard from './components/GuidelinesCard'
 import SpecModal from './components/SpecModal'
 import SpecContent from './components/SpecContent'
+import ProfilePanel from './components/ProfilePanel'
 import { inspectPdf, processPdf } from './lib/pdfEngine'
-import { saveFinishedJob, deleteFinishedJob, loadFinishedJobs } from './lib/jobStore'
+import { saveFinishedJob, deleteFinishedJob, loadFinishedJobs, downloadJobPdf, subscribeToJobs } from './lib/jobStore'
 import { loadIccProfile } from './lib/profileStore'
 import { loadDefaultIccProfile } from './lib/defaultProfile'
 import ColorProfileCard from './components/ColorProfileCard'
+import { useAuth } from './context/AuthContext'
 
-const makeJobId = () => `job-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+const makeJobId = () => crypto.randomUUID()
+
+function rowToJob(row) {
+  return {
+    id: row.id,
+    userId: row.user_id,
+    createdByName: row.created_by_name,
+    createdByEmail: row.created_by_email,
+    name: row.name,
+    status: 'done',
+    sizeInfo: { pageCount: row.page_count, widthMm: row.width_mm, heightMm: row.height_mm },
+    sizeOverride: null,
+    options: row.options,
+    progressStep: 'done',
+    progressMessage: '',
+    result: { report: row.report },
+    downloadUrl: null,
+    pdfPath: row.pdf_path,
+    error: null,
+    createdAt: new Date(row.created_at).getTime(),
+  }
+}
 
 export default function App() {
+  const { user, profile } = useAuth()
   const [active, setActive] = useState('dashboard')
   const [query, setQuery] = useState('')
   const [jobs, setJobs] = useState([])
@@ -32,31 +56,26 @@ export default function App() {
     if (hydrated.current) return
     hydrated.current = true
     loadIccProfile().then((record) => setIccProfile(record))
-    loadFinishedJobs().then((records) => {
-      const restored = records
-        .sort((a, b) => b.createdAt - a.createdAt)
-        .map((record) => {
-          const blob = new Blob([record.pdfBytes], { type: 'application/pdf' })
-          return {
-            id: record.id,
-            name: record.name,
-            status: 'done',
-            sizeInfo: record.sizeInfo,
-            sizeOverride: null,
-            options: record.options,
-            progressStep: 'done',
-            progressMessage: '',
-            result: { bytes: record.pdfBytes, report: record.report },
-            downloadUrl: URL.createObjectURL(blob),
-            error: null,
-            createdAt: record.createdAt,
-          }
+    loadFinishedJobs()
+      .then((rows) => {
+        const restored = rows.map(rowToJob)
+        setJobs((prev) => {
+          const existingIds = new Set(prev.map((j) => j.id))
+          return [...restored.filter((j) => !existingIds.has(j.id)), ...prev]
         })
-      setJobs((prev) => {
-        const existingIds = new Set(prev.map((j) => j.id))
-        return [...restored.filter((j) => !existingIds.has(j.id)), ...prev]
       })
-      setHistoryLoaded(true)
+      .catch((err) => console.error('Could not load job history:', err))
+      .finally(() => setHistoryLoaded(true))
+  }, [])
+
+  useEffect(() => {
+    return subscribeToJobs({
+      onInsert: (row) => {
+        setJobs((prev) => (prev.some((j) => j.id === row.id) ? prev : [rowToJob(row), ...prev]))
+      },
+      onDelete: (row) => {
+        setJobs((prev) => prev.filter((j) => j.id !== row.id))
+      },
     })
   }, [])
 
@@ -132,43 +151,79 @@ export default function App() {
       const blob = new Blob([bytes], { type: 'application/pdf' })
       const url = URL.createObjectURL(blob)
       const createdAt = Date.now()
-      patchJob(id, { status: 'done', result: { bytes, report }, downloadUrl: url, createdAt })
-      saveFinishedJob({
-        id,
-        name: job.name,
+      const sizeInfo = {
+        pageCount: job.sizeInfo.pageCount,
+        widthMm: job.sizeInfo.widthMm,
+        heightMm: job.sizeInfo.heightMm,
+      }
+      patchJob(id, {
+        status: 'done',
+        result: { bytes, report },
+        downloadUrl: url,
         createdAt,
-        sizeInfo: {
-          pageCount: job.sizeInfo.pageCount,
-          widthMm: job.sizeInfo.widthMm,
-          heightMm: job.sizeInfo.heightMm,
-        },
-        options: job.options,
-        report,
-        pdfBytes: bytes,
+        userId: user.id,
+        createdByName: profile?.full_name || user.email,
+        createdByEmail: user.email,
       })
+
+      try {
+        const pdfPath = await saveFinishedJob({
+          id,
+          userId: user.id,
+          createdByName: profile?.full_name || user.email,
+          createdByEmail: user.email,
+          name: job.name,
+          sizeInfo,
+          options: job.options,
+          report,
+          pdfBytes: bytes,
+        })
+        patchJob(id, { pdfPath })
+      } catch (saveErr) {
+        console.error('Could not save job to shared history:', saveErr)
+        patchJob(id, (j) => ({
+          result: { ...j.result, report: { ...j.result.report, warnings: [...j.result.report.warnings, `Could not save to shared history: ${saveErr.message}`] } },
+        }))
+      }
     } catch (err) {
       patchJob(id, { status: 'error', error: err.message || 'Processing failed.' })
     }
   }
 
-  const handleDownload = (id) => {
+  const handleDownload = async (id) => {
     const job = jobs.find((j) => j.id === id)
-    if (!job?.downloadUrl) return
+    if (!job) return
+
+    let { downloadUrl } = job
+    if (!downloadUrl) {
+      const bytes = job.result?.bytes || (await downloadJobPdf(job.pdfPath))
+      const blob = new Blob([bytes], { type: 'application/pdf' })
+      downloadUrl = URL.createObjectURL(blob)
+      patchJob(id, (j) => ({ result: { ...j.result, bytes }, downloadUrl }))
+    }
+
     const a = document.createElement('a')
-    a.href = job.downloadUrl
+    a.href = downloadUrl
     a.download = `${job.name}_print-ready.pdf`
     document.body.appendChild(a)
     a.click()
     a.remove()
   }
 
-  const handleDelete = (id) => {
+  const handleDelete = async (id) => {
+    const job = jobs.find((j) => j.id === id)
     setJobs((prev) => {
-      const job = prev.find((j) => j.id === id)
-      if (job?.downloadUrl) URL.revokeObjectURL(job.downloadUrl)
+      const target = prev.find((j) => j.id === id)
+      if (target?.downloadUrl) URL.revokeObjectURL(target.downloadUrl)
       return prev.filter((j) => j.id !== id)
     })
-    deleteFinishedJob(id)
+    if (job?.pdfPath || job?.status === 'done') {
+      try {
+        await deleteFinishedJob(id, job.pdfPath)
+      } catch (err) {
+        console.error('Could not delete job:', err)
+      }
+    }
   }
 
   const doneJobs = jobs.filter((j) => j.status === 'done').sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
@@ -181,13 +236,23 @@ export default function App() {
   const avgInk = allPages.length ? Math.round(allPages.reduce((a, p) => a + p.ink.maxTac, 0) / allPages.length) : 0
   const qrVerified = allPages.filter((p) => p.qrFinal.found).length
 
+  const jobCardProps = (job) => ({
+    job,
+    isOwner: !job.userId || job.userId === user?.id,
+    onConfirmSize: handleConfirmSize,
+    onUpdateOptions: handleUpdateOptions,
+    onProcess: handleProcess,
+    onDownload: handleDownload,
+    onDelete: handleDelete,
+  })
+
   return (
     <div className="min-h-screen flex">
       <GradientBlobs />
       <Sidebar active={active} onNavigate={setActive} />
 
       <div className="flex-1 min-w-0">
-        <Topbar active={active} query={query} onQuery={setQuery} />
+        <Topbar active={active} query={query} onQuery={setQuery} onNavigate={setActive} />
 
         <main className="px-6 lg:px-8 pb-12 space-y-6">
           {active === 'dashboard' && (
@@ -202,15 +267,7 @@ export default function App() {
                 <div className="lg:col-span-2 space-y-4">
                   <UploadZone onFiles={handleFiles} />
                   {doneJobs.slice(0, 3).map((job) => (
-                    <JobCard
-                      key={job.id}
-                      job={job}
-                      onConfirmSize={handleConfirmSize}
-                      onUpdateOptions={handleUpdateOptions}
-                      onProcess={handleProcess}
-                      onDownload={handleDownload}
-                      onDelete={handleDelete}
-                    />
+                    <JobCard key={job.id} {...jobCardProps(job)} />
                   ))}
                   {historyLoaded && doneJobs.length === 0 && (
                     <p className="text-xs text-zink/40 text-center py-6">
@@ -230,15 +287,7 @@ export default function App() {
             <div className="max-w-3xl mx-auto space-y-4">
               <UploadZone onFiles={handleFiles} />
               {jobs.map((job) => (
-                <JobCard
-                  key={job.id}
-                  job={job}
-                  onConfirmSize={handleConfirmSize}
-                  onUpdateOptions={handleUpdateOptions}
-                  onProcess={handleProcess}
-                  onDownload={handleDownload}
-                  onDelete={handleDelete}
-                />
+                <JobCard key={job.id} {...jobCardProps(job)} />
               ))}
               {jobs.length === 0 && (
                 <p className="text-xs text-zink/40 text-center py-6">No files yet — drop a PDF above to get started.</p>
@@ -254,15 +303,7 @@ export default function App() {
                 </p>
               )}
               {filteredJobHistory.map((job) => (
-                <JobCard
-                  key={job.id}
-                  job={job}
-                  onConfirmSize={handleConfirmSize}
-                  onUpdateOptions={handleUpdateOptions}
-                  onProcess={handleProcess}
-                  onDownload={handleDownload}
-                  onDelete={handleDelete}
-                />
+                <JobCard key={job.id} {...jobCardProps(job)} />
               ))}
             </div>
           )}
@@ -273,50 +314,52 @@ export default function App() {
             </div>
           )}
 
+          {active === 'profile' && <ProfilePanel />}
+
           {active === 'settings' && (
             <div className="max-w-md space-y-6">
               <div className="glass-card rounded-3xl shadow-card p-7">
                 <ColorProfileCard profile={iccProfile} onChange={setIccProfile} />
               </div>
               <div className="glass-card rounded-3xl shadow-card p-7 space-y-5">
-              <p className="font-bold text-zink text-sm">Defaults for new jobs</p>
-              <label className="block text-xs text-zink/55">
-                Bleed (mm)
-                <input
-                  type="number"
-                  value={defaults.bleedMm}
-                  onChange={(e) => setDefaults((d) => ({ ...d, bleedMm: Number(e.target.value) }))}
-                  className="mt-1 block w-full rounded-xl border border-zink/10 px-3 py-2 text-sm outline-none focus:border-zblue-400"
-                />
-              </label>
-              <label className="block text-xs text-zink/55">
-                Fold
-                <select
-                  value={defaults.fold}
-                  onChange={(e) => setDefaults((d) => ({ ...d, fold: e.target.value }))}
-                  className="mt-1 block w-full rounded-xl border border-zink/10 px-3 py-2 text-sm outline-none focus:border-zblue-400 bg-white"
-                >
-                  <option value="none">No fold</option>
-                  <option value="half-vertical">Half-fold (vertical)</option>
-                  <option value="half-horizontal">Half-fold (horizontal)</option>
-                  <option value="tri-vertical">Tri-fold (vertical)</option>
-                </select>
-              </label>
-              <label className="flex items-center gap-2 text-xs text-zink/55">
-                <input
-                  type="checkbox"
-                  checked={defaults.flattenToRaster}
-                  onChange={(e) => setDefaults((d) => ({ ...d, flattenToRaster: e.target.checked }))}
-                  className="h-4 w-4 accent-zblue-500"
-                />
-                Flatten & convert to CMYK by default
-              </label>
-              <p className="text-[11px] text-zink/35 leading-relaxed">
-                Off (default): artwork stays sharp vector — bleed, marks and colour profile are added around it. On:
-                rasterizes everything and bakes the CMYK conversion into pixels — sharper zoom is traded for
-                pre-converted colour. These apply to new uploads only; each job can still override them before
-                processing.
-              </p>
+                <p className="font-bold text-zink text-sm">Defaults for new jobs</p>
+                <label className="block text-xs text-zink/55">
+                  Bleed (mm)
+                  <input
+                    type="number"
+                    value={defaults.bleedMm}
+                    onChange={(e) => setDefaults((d) => ({ ...d, bleedMm: Number(e.target.value) }))}
+                    className="mt-1 block w-full rounded-xl border border-zink/10 px-3 py-2 text-sm outline-none focus:border-zblue-400"
+                  />
+                </label>
+                <label className="block text-xs text-zink/55">
+                  Fold
+                  <select
+                    value={defaults.fold}
+                    onChange={(e) => setDefaults((d) => ({ ...d, fold: e.target.value }))}
+                    className="mt-1 block w-full rounded-xl border border-zink/10 px-3 py-2 text-sm outline-none focus:border-zblue-400 bg-white"
+                  >
+                    <option value="none">No fold</option>
+                    <option value="half-vertical">Half-fold (vertical)</option>
+                    <option value="half-horizontal">Half-fold (horizontal)</option>
+                    <option value="tri-vertical">Tri-fold (vertical)</option>
+                  </select>
+                </label>
+                <label className="flex items-center gap-2 text-xs text-zink/55">
+                  <input
+                    type="checkbox"
+                    checked={defaults.flattenToRaster}
+                    onChange={(e) => setDefaults((d) => ({ ...d, flattenToRaster: e.target.checked }))}
+                    className="h-4 w-4 accent-zblue-500"
+                  />
+                  Flatten & convert to CMYK by default
+                </label>
+                <p className="text-[11px] text-zink/35 leading-relaxed">
+                  Off (default): artwork stays sharp vector — bleed, marks and colour profile are added around it. On:
+                  rasterizes everything and bakes the CMYK conversion into pixels — sharper zoom is traded for
+                  pre-converted colour. These apply to new uploads only; each job can still override them before
+                  processing.
+                </p>
               </div>
             </div>
           )}

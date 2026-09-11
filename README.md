@@ -1,17 +1,18 @@
 # Zopper Printables Studio
 
-A browser-only dashboard that turns a PDF into a press-ready file: sharp
-vector artwork (the original page is embedded as-is, not rasterized), 3mm
-bleed (edge-pixel extrusion, raster-only in the trimmed-off margin), trim +
-registration marks, a 22-patch colour bar, dashed fold marks, a caption
-stamp, correct TrimBox/BleedBox/MediaBox/ArtBox, an output intent, an
-ink-coverage (TAC) check, and QR verification — built to the spec in
-`references/print-pipeline-notes.md`. No backend: every PDF is read,
-transformed, and re-assembled client-side with `pdf.js`, `pdf-lib`, and
-`jsQR`, and the result downloads straight from the browser.
+A dashboard that turns a PDF into a press-ready file: sharp vector artwork
+(the original page is embedded as-is, not rasterized), 3mm bleed (edge-pixel
+extrusion, raster-only in the trimmed-off margin), trim + registration
+marks, a 22-patch colour bar, dashed fold marks, a caption stamp, correct
+TrimBox/BleedBox/MediaBox/ArtBox, an output intent, an ink-coverage (TAC)
+check, and QR verification — built to the spec in
+`references/print-pipeline-notes.md`. The PDF itself is read, transformed,
+and re-assembled entirely client-side with `pdf.js`, `pdf-lib`, and `jsQR`.
 
-Finished jobs (name, QA report, and the PDF itself) persist in this browser's
-IndexedDB, so job history survives a refresh — nothing leaves the device.
+Sign-in is required (Supabase Auth, restricted to `@zopper.com` addresses),
+and finished jobs — name, QA report, and the PDF itself — are saved to a
+shared Supabase project, so job history is the same for everyone on the
+team and survives across devices, not just this browser.
 
 ## Sharp by default (vector, not rasterized)
 
@@ -32,6 +33,7 @@ CMYK baked into pixels rather than declared via the output intent.
 ## Run it
 
 ```bash
+cp .env.example .env.local   # fill in your Supabase project URL + anon key
 npm install
 npm run dev       # http://localhost:5173
 ```
@@ -40,6 +42,29 @@ npm run dev       # http://localhost:5173
 npm run build     # production build in dist/
 npm run preview   # serve the production build locally
 ```
+
+### Supabase setup (one-time, per project)
+
+1. Create a Supabase project, then copy its **Project URL** and **anon/public
+   key** (Settings → API) into `.env.local` as `VITE_SUPABASE_URL` and
+   `VITE_SUPABASE_ANON_KEY`. Never use the `service_role` key here — this is
+   a client-side app, and everything is designed to work safely with the
+   anon key plus Row Level Security.
+2. Paste `supabase/schema.sql` into the Supabase SQL Editor and run it once.
+   It's idempotent (safe to re-run). It sets up:
+   - `profiles` and `jobs` tables with Row Level Security — anyone signed in
+     can read all jobs (shared team history), but only the creator of a job
+     can delete it.
+   - A database trigger that rejects any signup whose email doesn't end in
+     `@zopper.com`, enforced server-side so it can't be bypassed by calling
+     the Supabase API directly.
+   - A trigger that auto-creates a `profiles` row for every new user.
+   - The `job-pdfs` Storage bucket (private) and its access policies.
+   - Realtime enabled on `jobs`, so everyone's list updates live.
+3. In Authentication → Providers → Email, decide whether to require email
+   confirmation before a new signup can sign in (on by default). Either way
+   works — the app shows a "check your email" screen when confirmation is
+   pending.
 
 ## Certified colour conversion
 

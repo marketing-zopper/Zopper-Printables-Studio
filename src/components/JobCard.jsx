@@ -41,12 +41,22 @@ function StepRow({ label, state, detail }) {
   )
 }
 
-export default function JobCard({ job, onConfirmSize, onUpdateOptions, onProcess, onDownload, onDelete }) {
+export default function JobCard({ job, isOwner, onConfirmSize, onUpdateOptions, onProcess, onDownload, onDelete }) {
   const [expanded, setExpanded] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
+  const [downloading, setDownloading] = useState(false)
   const [sizeW, setSizeW] = useState(job.sizeInfo ? Math.round(job.sizeInfo.widthMm) : 0)
   const [sizeH, setSizeH] = useState(job.sizeInfo ? Math.round(job.sizeInfo.heightMm) : 0)
   const menuRef = useRef(null)
+
+  const handleDownload = async () => {
+    setDownloading(true)
+    try {
+      await onDownload(job.id)
+    } finally {
+      setDownloading(false)
+    }
+  }
 
   useEffect(() => {
     if (!menuOpen) return
@@ -70,33 +80,36 @@ export default function JobCard({ job, onConfirmSize, onUpdateOptions, onProcess
           <p className="text-sm font-semibold text-zink truncate">{job.name}</p>
           <p className="text-[11px] text-zink/40">
             {job.sizeInfo ? `${job.sizeInfo.pageCount} page${job.sizeInfo.pageCount > 1 ? 's' : ''} · ${formatMm(job.sizeInfo.widthMm)} × ${formatMm(job.sizeInfo.heightMm)}` : 'Reading…'}
+            {job.createdByName && ` · by ${job.createdByName}`}
           </p>
         </div>
         <StatusPill status={job.status} />
         <button onClick={() => setExpanded((v) => !v)} className="text-zink/30 hover:text-zink/60">
           {expanded ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
         </button>
-        <div className="relative" ref={menuRef}>
-          <button
-            onClick={() => setMenuOpen((v) => !v)}
-            className="text-zink/30 hover:text-zink/60 h-7 w-7 grid place-items-center rounded-lg hover:bg-zink/5"
-          >
-            <MoreVertical size={17} />
-          </button>
-          {menuOpen && (
-            <div className="absolute right-0 top-9 z-10 w-36 rounded-xl bg-white shadow-soft border border-zink/5 py-1.5 overflow-hidden">
-              <button
-                onClick={() => {
-                  setMenuOpen(false)
-                  onDelete(job.id)
-                }}
-                className="w-full flex items-center gap-2 px-3 py-2 text-xs font-medium text-red-600 hover:bg-red-50 transition-colors"
-              >
-                <Trash2 size={14} /> Delete
-              </button>
-            </div>
-          )}
-        </div>
+        {(isOwner === undefined || isOwner) && (
+          <div className="relative" ref={menuRef}>
+            <button
+              onClick={() => setMenuOpen((v) => !v)}
+              className="text-zink/30 hover:text-zink/60 h-7 w-7 grid place-items-center rounded-lg hover:bg-zink/5"
+            >
+              <MoreVertical size={17} />
+            </button>
+            {menuOpen && (
+              <div className="absolute right-0 top-9 z-10 w-36 rounded-xl bg-white shadow-soft border border-zink/5 py-1.5 overflow-hidden">
+                <button
+                  onClick={() => {
+                    setMenuOpen(false)
+                    onDelete(job.id)
+                  }}
+                  className="w-full flex items-center gap-2 px-3 py-2 text-xs font-medium text-red-600 hover:bg-red-50 transition-colors"
+                >
+                  <Trash2 size={14} /> Delete
+                </button>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {job.status === 'confirm-size' && (
@@ -248,10 +261,12 @@ export default function JobCard({ job, onConfirmSize, onUpdateOptions, onProcess
           )}
 
           <button
-            onClick={() => onDownload(job.id)}
-            className="mt-3 w-full flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-zorange-500 to-zorange-600 text-white text-sm font-semibold py-2.5 shadow-soft hover:opacity-95 transition-opacity"
+            onClick={handleDownload}
+            disabled={downloading}
+            className="mt-3 w-full flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-zorange-500 to-zorange-600 text-white text-sm font-semibold py-2.5 shadow-soft hover:opacity-95 transition-opacity disabled:opacity-70"
           >
-            <Download size={16} /> Download print-ready PDF
+            {downloading ? <Loader2 size={16} className="animate-spin" /> : <Download size={16} />}
+            {downloading ? 'Fetching…' : 'Download print-ready PDF'}
           </button>
         </div>
       )}

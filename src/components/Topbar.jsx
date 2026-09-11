@@ -1,15 +1,24 @@
 import { Search, Bell } from 'lucide-react'
-import logo from '../assets/zopper-logo.png'
+import { useAuth } from '../context/AuthContext'
 
 const TITLES = {
   dashboard: 'Dashboard',
   upload: 'New Print Job',
   jobs: 'Job History',
   spec: 'Print Spec',
+  profile: 'Profile',
   settings: 'Settings',
 }
 
-export default function Topbar({ active, query, onQuery }) {
+export default function Topbar({ active, query, onQuery, onNavigate }) {
+  const { user, profile } = useAuth()
+  const initials = (profile?.full_name || user?.email || '?')
+    .split(' ')
+    .map((s) => s[0])
+    .join('')
+    .slice(0, 2)
+    .toUpperCase()
+
   return (
     <header className="flex items-center justify-between gap-4 px-6 lg:px-8 py-6">
       <div>
@@ -33,11 +42,13 @@ export default function Topbar({ active, query, onQuery }) {
         <button className="grid place-items-center h-10 w-10 rounded-full glass-card shadow-card text-zink/60 hover:text-zorange-500 transition-colors">
           <Bell size={17} />
         </button>
-        <img
-          src={logo}
-          alt="account"
-          className="h-10 w-10 rounded-full object-contain bg-white shadow-card p-1.5"
-        />
+        <button
+          onClick={() => onNavigate?.('profile')}
+          title={profile?.full_name || user?.email}
+          className="h-10 w-10 rounded-full bg-gradient-to-br from-znavy-600 to-zblue-600 text-white grid place-items-center font-bold text-xs shadow-card shrink-0"
+        >
+          {initials}
+        </button>
       </div>
     </header>
   )

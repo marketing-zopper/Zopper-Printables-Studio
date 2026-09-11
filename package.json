@@ -9,19 +9,20 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "pdfjs-dist": "3.11.174",
-    "pdf-lib": "^1.17.1",
+    "@supabase/supabase-js": "^2.116.0",
     "jsqr": "^1.4.0",
+    "lcms-wasm": "^1.0.5",
     "lucide-react": "^0.462.0",
-    "lcms-wasm": "^1.0.5"
+    "pdf-lib": "^1.17.1",
+    "pdfjs-dist": "3.11.174",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.3.3",
-    "vite": "^5.4.10",
-    "tailwindcss": "^3.4.14",
+    "autoprefixer": "^10.4.20",
     "postcss": "^8.4.47",
-    "autoprefixer": "^10.4.20"
+    "tailwindcss": "^3.4.14",
+    "vite": "^5.4.10"
   }
 }
