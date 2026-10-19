@@ -105,6 +105,7 @@ export default function App() {
         .then((info) => {
           patchJob(id, {
             sizeInfo: { widthMm: info.widthMm, heightMm: info.heightMm, pageCount: info.pageCount, buffer: info.buffer },
+            sizeOverride: info.suggestedSize,
             status: info.suspicious ? 'confirm-size' : 'ready',
           })
         })
@@ -113,8 +114,12 @@ export default function App() {
     setActive('upload')
   }
 
-  const handleConfirmSize = (id, sizeOverride) => {
-    patchJob(id, { sizeOverride, status: 'ready' })
+  const handleSizeChange = (id, sizeOverride) => {
+    patchJob(id, { sizeOverride })
+  }
+
+  const handleConfirmSize = (id) => {
+    patchJob(id, { status: 'ready' })
   }
 
   const handleUpdateOptions = (id, patch) => {
@@ -153,8 +158,8 @@ export default function App() {
       const createdAt = Date.now()
       const sizeInfo = {
         pageCount: job.sizeInfo.pageCount,
-        widthMm: job.sizeInfo.widthMm,
-        heightMm: job.sizeInfo.heightMm,
+        widthMm: report.pages[0]?.trimWmm ?? job.sizeInfo.widthMm,
+        heightMm: report.pages[0]?.trimHmm ?? job.sizeInfo.heightMm,
       }
       patchJob(id, {
         status: 'done',
@@ -239,6 +244,7 @@ export default function App() {
   const jobCardProps = (job) => ({
     job,
     isOwner: !job.userId || job.userId === user?.id,
+    onSizeChange: handleSizeChange,
     onConfirmSize: handleConfirmSize,
     onUpdateOptions: handleUpdateOptions,
     onProcess: handleProcess,
@@ -353,8 +359,7 @@ export default function App() {
                     className="h-4 w-4 accent-zblue-500"
                   />
                   Flatten & convert to CMYK by default
-                </label>
-                <p className="text-[11px] text-zink/35 leading-relaxed">
+                </label>                <p className="text-[11px] text-zink/35 leading-relaxed">
                   Off (default): artwork stays sharp vector — bleed, marks and colour profile are added around it. On:
                   rasterizes everything and bakes the CMYK conversion into pixels — sharper zoom is traded for
                   pre-converted colour. These apply to new uploads only; each job can still override them before

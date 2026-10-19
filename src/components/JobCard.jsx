@@ -15,6 +15,7 @@ import {
   Trash2,
 } from 'lucide-react'
 import { formatMm } from '../lib/units'
+import SizePicker from './SizePicker'
 
 const STEP_DEFS = [
   { key: 'render', label: 'Rendering pages' },
@@ -41,13 +42,12 @@ function StepRow({ label, state, detail }) {
   )
 }
 
-export default function JobCard({ job, isOwner, onConfirmSize, onUpdateOptions, onProcess, onDownload, onDelete }) {
+export default function JobCard({ job, isOwner, onSizeChange, onConfirmSize, onUpdateOptions, onProcess, onDownload, onDelete }) {
   const [expanded, setExpanded] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
   const [downloading, setDownloading] = useState(false)
-  const [sizeW, setSizeW] = useState(job.sizeInfo ? Math.round(job.sizeInfo.widthMm) : 0)
-  const [sizeH, setSizeH] = useState(job.sizeInfo ? Math.round(job.sizeInfo.heightMm) : 0)
   const menuRef = useRef(null)
+  const sizeInvalid = Boolean(job.sizeOverride?.invalid)
 
   const handleDownload = async () => {
     setDownloading(true)
@@ -119,30 +119,14 @@ export default function JobCard({ job, isOwner, onConfirmSize, onUpdateOptions, 
           </p>
           <p className="text-[11px] text-zorange-700/70 mt-1 leading-relaxed">
             This page is {formatMm(job.sizeInfo.widthMm)} × {formatMm(job.sizeInfo.heightMm)} — larger than usual. Figma
-            exports often mistake pixels for points. Confirm the intended trim size, or correct it below.
+            exports often mistake pixels for points. Choose the size this should be printed at.
           </p>
-          <div className="flex items-end gap-3 mt-3">
-            <label className="text-xs text-zink/60">
-              Width (mm)
-              <input
-                type="number"
-                value={sizeW}
-                onChange={(e) => setSizeW(Number(e.target.value))}
-                className="mt-1 block w-24 rounded-xl border border-zink/10 px-3 py-1.5 text-sm outline-none focus:border-zblue-400"
-              />
-            </label>
-            <label className="text-xs text-zink/60">
-              Height (mm)
-              <input
-                type="number"
-                value={sizeH}
-                onChange={(e) => setSizeH(Number(e.target.value))}
-                className="mt-1 block w-24 rounded-xl border border-zink/10 px-3 py-1.5 text-sm outline-none focus:border-zblue-400"
-              />
-            </label>
+          <div className="flex flex-wrap items-end justify-between gap-3 mt-3">
+            <SizePicker value={job.sizeOverride} onChange={(size) => onSizeChange(job.id, size)} />
             <button
-              onClick={() => onConfirmSize(job.id, { widthMm: sizeW, heightMm: sizeH })}
-              className="rounded-xl bg-zorange-500 hover:bg-zorange-600 text-white text-sm font-semibold px-4 py-2 transition-colors"
+              onClick={() => onConfirmSize(job.id)}
+              disabled={sizeInvalid}
+              className="rounded-xl bg-zorange-500 hover:bg-zorange-600 text-white text-sm font-semibold px-4 py-2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
               Confirm & continue
             </button>
@@ -152,6 +136,15 @@ export default function JobCard({ job, isOwner, onConfirmSize, onUpdateOptions, 
 
       {(job.status === 'ready' || expanded) && job.status !== 'confirm-size' && (
         <div className="mt-4 grid grid-cols-2 sm:grid-cols-3 gap-3">
+          {job.sizeOverride && (
+            <div className="col-span-full">
+              <SizePicker
+                value={job.sizeOverride}
+                onChange={(size) => onSizeChange(job.id, size)}
+                disabled={job.status !== 'ready'}
+              />
+            </div>
+          )}
           <label className="text-xs text-zink/55">
             Fold
             <select
@@ -187,14 +180,14 @@ export default function JobCard({ job, isOwner, onConfirmSize, onUpdateOptions, 
               />
               Flatten & convert
             </span>
-          </label>
-        </div>
+          </label>        </div>
       )}
 
       {job.status === 'ready' && (
         <button
           onClick={() => onProcess(job.id)}
-          className="mt-4 w-full rounded-2xl bg-gradient-to-r from-znavy-600 to-zblue-600 text-white text-sm font-semibold py-2.5 shadow-soft hover:opacity-95 transition-opacity"
+          disabled={sizeInvalid}
+          className="mt-4 w-full rounded-2xl bg-gradient-to-r from-znavy-600 to-zblue-600 text-white text-sm font-semibold py-2.5 shadow-soft hover:opacity-95 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
         >
           Process for print
         </button>
@@ -249,7 +242,10 @@ export default function JobCard({ job, isOwner, onConfirmSize, onUpdateOptions, 
             <div className="mt-3 space-y-1.5 max-h-56 overflow-y-auto pr-1">
               {job.result.report.pages.map((p) => (
                 <div key={p.index} className="flex items-center justify-between text-[11px] text-zink/55 bg-white/50 rounded-xl px-3 py-2">
-                  <span>Page {p.index + 1} · {p.trimWmm}×{p.trimHmm}mm · {p.dpi}dpi</span>
+                  <span>
+                    Page {p.index + 1} · {p.trimWmm}×{p.trimHmm}mm · {p.dpi}dpi
+                    {p.marginTrimMm && ' · white margin trimmed'}
+                  </span>
                   <span className={p.ink.maxTac > 330 ? 'text-red-600 font-semibold' : ''}>{p.ink.maxTac}% TAC</span>
                   <span>{p.qrFinal.found ? `QR: ${p.qrFinal.payload.slice(0, 24)}${p.qrFinal.payload.length > 24 ? '…' : ''}` : 'No QR'}</span>
                 </div>
