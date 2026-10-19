@@ -4,6 +4,8 @@ import {
   computeRenderDpi,
   renderPageToCanvas,
   getBasePageGeometry,
+  findArtworkBounds,
+  cropCanvas,
   extrudeBleed,
   cropBleedStrips,
   applyCmykPreview,
@@ -21,17 +23,61 @@ import {
   setOutputIntent,
 } from './pdfMarks'
 import { mmToPt, ptToMm } from './units'
+import { resolveTrimPt, suggestSizeOverride } from './pageSizes'
 import { createCmykConverter } from './colorEngine'
 
 const MARGIN_MM = 15
 const SUSPICIOUS_SIZE_MM = 400
+const BLEED_OVERLAP_MM = 0.35 // how far each bleed strip tucks under the artwork edge
 const VERIFY_DPI_CAP = 150 // the final QR re-check only needs to be legible, not press-resolution
+
+const INSPECT_RENDER_PIXELS = 2_000_000 // upload-time look at page 1 only needs to find the artwork edge
+const STRETCH_WARN_PCT = 2 // below this, fitting the artwork to an exact A4/A5 is imperceptible; above it, distortion shows
+
+// Finds the real artwork rectangle on a rendered page (see artworkBounds.js) and
+// maps it back into the source PDF's user space. Returns null if the page is
+// rotated or has no flat margin around the design.
+function measureArtwork(pdfJsPage, baseGeom, canvas) {
+  const bounds = pdfJsPage.rotate ? null : findArtworkBounds(canvas)
+  if (!bounds) return null
+
+  const pxPerPtX = canvas.width / baseGeom.widthPt
+  const pxPerPtY = canvas.height / baseGeom.heightPt
+  const [viewX0, , , viewY1] = pdfJsPage.view
+  const boxPt = {
+    left: viewX0 + bounds.left / pxPerPtX,
+    right: viewX0 + bounds.right / pxPerPtX,
+    top: viewY1 - bounds.top / pxPerPtY,
+    bottom: viewY1 - bounds.bottom / pxPerPtY,
+  }
+  const toMm = (px, pxPerPt) => Math.round(ptToMm(px / pxPerPt) * 10) / 10
+  return {
+    bounds,
+    boxPt,
+    widthPt: boxPt.right - boxPt.left,
+    heightPt: boxPt.top - boxPt.bottom,
+    marginTrimMm: {
+      left: toMm(bounds.left, pxPerPtX),
+      top: toMm(bounds.top, pxPerPtY),
+      right: toMm(canvas.width - bounds.right, pxPerPtX),
+      bottom: toMm(canvas.height - bounds.bottom, pxPerPtY),
+    },
+  }
+}
 
 export async function inspectPdf(file) {
   const buffer = await file.arrayBuffer()
   const pdfJsDoc = await loadPdfJsDoc(buffer.slice(0))
   const firstPage = await pdfJsDoc.getPage(1)
-  const { widthPt, heightPt } = getBasePageGeometry(firstPage)
+  const baseGeom = getBasePageGeometry(firstPage)
+
+  // Report the size of the design itself, not of the page it was exported onto.
+  const inspectDpi = Math.min(100, Math.sqrt(INSPECT_RENDER_PIXELS / ((baseGeom.widthPt / 72) * (baseGeom.heightPt / 72))))
+  const probeCanvas = await renderPageToCanvas(pdfJsDoc, 0, Math.max(inspectDpi, 24))
+  const artwork = measureArtwork(firstPage, baseGeom, probeCanvas)
+  const widthPt = artwork ? artwork.widthPt : baseGeom.widthPt
+  const heightPt = artwork ? artwork.heightPt : baseGeom.heightPt
+
   const widthMm = ptToMm(widthPt)
   const heightMm = ptToMm(heightPt)
   const suspicious = Math.max(widthMm, heightMm) > SUSPICIOUS_SIZE_MM
@@ -44,6 +90,7 @@ export async function inspectPdf(file) {
     widthMm,
     heightMm,
     suspicious,
+    suggestedSize: suggestSizeOverride(widthMm, heightMm, { oversized: suspicious }),
   }
 }
 
@@ -52,7 +99,7 @@ export async function processPdf({ file, buffer, options, onProgress }) {
     jobName,
     bleedMm = 3,
     fold = 'none',
-    sizeOverride = null, // { widthMm, heightMm } applied uniformly to every page
+    sizeOverride = null, // { widthMm, heightMm, autoOrient } — see pageSizes.js; applied to every page
     iccProfile = null, // { bytes, name } — a real CMYK output profile, if the user supplied one
   } = options
   // default: keep artwork as sharp vector; true = old rasterize-everything path.
@@ -114,16 +161,29 @@ export async function processPdf({ file, buffer, options, onProgress }) {
 
       const pdfJsPage = await pdfJsDoc.getPage(i + 1)
       const baseGeom = getBasePageGeometry(pdfJsPage)
-      let trimWpt = baseGeom.widthPt
-      let trimHpt = baseGeom.heightPt
-
-      if (sizeOverride) {
-        trimWpt = mmToPt(sizeOverride.widthMm)
-        trimHpt = mmToPt(sizeOverride.heightMm)
-      }
 
       const dpi = computeRenderDpi(baseGeom.widthPt, baseGeom.heightPt)
-      const sourceCanvas = await renderPageToCanvas(pdfJsDoc, i, dpi)
+      const renderedCanvas = await renderPageToCanvas(pdfJsDoc, i, dpi)
+
+      // If the design sits inside a flat white page margin, the trim box has to
+      // sit on the design's own edge — otherwise the margin lands inside the trim
+      // and gets extruded as bleed. Rotated pages are left alone (the crop box
+      // is only mapped back to PDF space for upright pages).
+      const artwork = measureArtwork(pdfJsPage, baseGeom, renderedCanvas)
+      const sourceCanvas = artwork ? cropCanvas(renderedCanvas, artwork.bounds) : renderedCanvas
+      const artBoxPt = artwork ? artwork.boxPt : null // artwork rectangle in the source PDF's user space
+      const marginTrimMm = artwork ? artwork.marginTrimMm : null
+      const artWpt = artwork ? artwork.widthPt : baseGeom.widthPt
+      const artHpt = artwork ? artwork.heightPt : baseGeom.heightPt
+
+      // The requested output size (A4 / A5 / custom). Scaling is exact; if the
+      // artwork's shape differs from the target it is stretched, which we flag.
+      let trimWpt = artWpt
+      let trimHpt = artHpt
+      let stretchPct = 0
+      if (sizeOverride) {
+        ;({ widthPt: trimWpt, heightPt: trimHpt, stretchPct } = resolveTrimPt(sizeOverride, artWpt, artHpt))
+      }
 
       progress({ step: 'qr-source', pageIndex: i, pageCount, message: `Scanning page ${i + 1} for QR codes` })
       const qrSource = decodeQrFromCanvas(sourceCanvas)
@@ -163,17 +223,16 @@ export async function processPdf({ file, buffer, options, onProgress }) {
         const png = await outDoc.embedPng(pngBytes)
         page.drawImage(png, { x: marginPt, y: marginPt, width: trimWpt + bleedPt * 2, height: trimHpt + bleedPt * 2 })
       } else {
-        const srcPage = srcDoc.getPages()[i]
-        const embeddedPage = await outDoc.embedPage(srcPage)
-        page.drawPage(embeddedPage, { x: trimX0, y: trimY0, width: trimWpt, height: trimHpt })
-
+        // Bleed strips go down first and reach BLEED_OVERLAP_MM under the artwork;
+        // the artwork is drawn over them so no hairline of paper shows at the trim edge.
         if (bleedPx > 0) {
+          const overlapPt = mmToPt(BLEED_OVERLAP_MM)
           const strips = cropBleedStrips(bledCanvas, bleedPx, sourceCanvas.width, sourceCanvas.height)
           const placements = [
-            [strips.top, bleedX0, trimY1, bleedX1 - bleedX0, bleedPt],
-            [strips.bottom, bleedX0, bleedY0, bleedX1 - bleedX0, bleedPt],
-            [strips.left, bleedX0, trimY0, bleedPt, trimY1 - trimY0],
-            [strips.right, trimX1, trimY0, bleedPt, trimY1 - trimY0],
+            [strips.top, bleedX0, trimY1 - overlapPt, bleedX1 - bleedX0, bleedPt + overlapPt],
+            [strips.bottom, bleedX0, bleedY0, bleedX1 - bleedX0, bleedPt + overlapPt],
+            [strips.left, bleedX0, bleedY0, bleedPt + overlapPt, bleedY1 - bleedY0],
+            [strips.right, trimX1 - overlapPt, bleedY0, bleedPt + overlapPt, bleedY1 - bleedY0],
           ]
           for (const [canvas, x, y, width, height] of placements) {
             const pngBytes = await canvasToPngBytes(canvas)
@@ -181,6 +240,10 @@ export async function processPdf({ file, buffer, options, onProgress }) {
             page.drawImage(png, { x, y, width, height })
           }
         }
+
+        const srcPage = srcDoc.getPages()[i]
+        const embeddedPage = await outDoc.embedPage(srcPage, artBoxPt ?? undefined)
+        page.drawPage(embeddedPage, { x: trimX0, y: trimY0, width: trimWpt, height: trimHpt })
       }
 
       setPdfBox(page, 'BleedBox', bleedX0, bleedY0, bleedX1, bleedY1)
@@ -206,7 +269,7 @@ export async function processPdf({ file, buffer, options, onProgress }) {
         `${jobName} · Page ${i + 1}/${pageCount} · ${colorLabel} · Trim ${trimWmm}×${trimHmm}mm · Bleed ${bleedMm}mm`,
       )
 
-      pageRecords.push({ index: i, trimWmm, trimHmm, dpi: Math.round(dpi), ink, qrSource })
+      pageRecords.push({ index: i, trimWmm, trimHmm, dpi: Math.round(dpi), ink, qrSource, marginTrimMm, stretchPct })
     }
 
     progress({ step: 'assemble', pageIndex: pageCount - 1, pageCount, message: 'Embedding output intent & finalising document' })
@@ -226,6 +289,9 @@ export async function processPdf({ file, buffer, options, onProgress }) {
       const qrFinal = decodeQrFromCanvas(checkCanvas)
 
       const warnings = []
+      if (record.stretchPct > STRETCH_WARN_PCT) {
+        warnings.push(`Artwork shape differs from the ${record.trimWmm}×${record.trimHmm}mm target by ${record.stretchPct.toFixed(1)}%, so it was stretched to fit.`)
+      }
       if (record.ink.maxTac > 330) warnings.push(`Ink coverage peaks at ${record.ink.maxTac}% TAC, above the 330% coated ceiling.`)
       if (record.qrSource.found && qrFinal.found && record.qrSource.payload !== qrFinal.payload) {
         warnings.push('QR payload changed between source and finished file — verify manually.')

@@ -1,6 +1,7 @@
 import * as pdfjsLib from 'pdfjs-dist'
 import pdfjsWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.js?url'
 import jsQR from 'jsqr'
+import { detectArtworkBounds } from './artworkBounds'
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorkerUrl
 
@@ -41,6 +42,21 @@ export function getBasePageGeometry(page) {
   return { widthPt: viewport.width, heightPt: viewport.height }
 }
 
+// Finds the artwork rectangle inside a flat margin (see artworkBounds.js) so the
+// trim box can sit on the design's own edge. Returns null if there's nothing to crop.
+export function findArtworkBounds(canvas) {
+  const imageData = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height)
+  return detectArtworkBounds(imageData)
+}
+
+export function cropCanvas(srcCanvas, { left, top, right, bottom }) {
+  const out = document.createElement('canvas')
+  out.width = right - left
+  out.height = bottom - top
+  out.getContext('2d', { willReadFrequently: true }).drawImage(srcCanvas, left, top, out.width, out.height, 0, 0, out.width, out.height)
+  return out
+}
+
 export function extrudeBleed(srcCanvas, bleedPx) {
   const w = srcCanvas.width
   const h = srcCanvas.height
@@ -64,8 +80,14 @@ export function extrudeBleed(srcCanvas, bleedPx) {
   return out
 }
 
-// Crops the four bleed-margin bands out of a bled canvas (top/bottom span
-// full width including corners; left/right span only the trim height).
+// Crops the four bleed-margin bands out of a bled canvas. Every band carries one
+// extra pixel line of the artwork's own edge, so it can be placed a hair *under*
+// the vector artwork: where artwork and strip meet on the trim line, their
+// anti-aliased edges would otherwise leave a sliver of white paper showing.
+// Bleed pixels are constant across their depth, so stretching that extra line
+// over the overlap distance is invisible. Top/bottom bands span the full width
+// and left/right the full height, so the corner squares are covered twice with
+// the same colour and can't seam against each other either.
 // Used to keep bleed synthesis raster-only while the artwork itself stays
 // vector — nobody zooms into the strip that gets trimmed off anyway.
 export function cropBleedStrips(bledCanvas, bleedPx, origW, origH) {
@@ -77,11 +99,12 @@ export function cropBleedStrips(bledCanvas, bleedPx, origW, origH) {
     return c
   }
   const fullW = origW + bleedPx * 2
+  const fullH = origH + bleedPx * 2
   return {
-    top: crop(0, 0, fullW, bleedPx),
-    bottom: crop(0, bleedPx + origH, fullW, bleedPx),
-    left: crop(0, bleedPx, bleedPx, origH),
-    right: crop(bleedPx + origW, bleedPx, bleedPx, origH),
+    top: crop(0, 0, fullW, bleedPx + 1),
+    bottom: crop(0, bleedPx + origH - 1, fullW, bleedPx + 1),
+    left: crop(0, 0, bleedPx + 1, fullH),
+    right: crop(bleedPx + origW - 1, 0, bleedPx + 1, fullH),
   }
 }
 

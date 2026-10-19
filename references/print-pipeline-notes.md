@@ -169,6 +169,37 @@ overlap 0.35mm into the artwork side** rather than sit flush against it —
 invisible since it's the same extruded edge colour, and it closes the gap
 on every file built afterward, not just this one.
 
+### White ring between the trim marks and the design (page margin baked into the artwork)
+**File:** `Zopper Mobile Assure Price Sheet.pdf` (2 pages)
+The finished sheet showed the design sitting ~3mm *inside* the trim marks with a
+white border all the way out to the page edge, instead of running through the
+bleed. Root cause: the source page was 1841.7×2582.7pt with a flat white margin
+(~28pt a side) around the real A4@3x design — a typical browser print-to-PDF /
+placed-frame export. The pipeline treated the whole page as the artwork, so the
+margin was scaled into the trim box and its white edge pixels were extruded as
+the "bleed". Nothing was wrong with the boxes or marks; the artwork rectangle was
+simply mis-identified, and the oversize page also (correctly) tripped the size check.
+- **Fix**: before anything else, each rendered page is scanned for a *clean
+  artwork-in-a-margin* layout (`lib/artworkBounds.js`): all four page corners are
+  the same flat background, and the first content line on every side is a solid
+  edge spanning ≥85% of the page, within 6% of the border. If so, the page is
+  cropped to that rectangle — the vector artwork is clipped with an embedded-page
+  bounding box (stays vector), bleed is extruded from the real artwork edge, and
+  the trim size is the cropped size. The crop steps 2px inside the anti-aliased
+  edge so the extruded colour is solid.
+- **Deliberately conservative**: anything that isn't that exact shape (full-bleed
+  art, a white poster with floating content, a full-bleed design with a white
+  header band, a wide deliberate white frame) is left untouched. Always on — there
+  is no per-job toggle.
+- **Also fixed here**: the "hairline white seam at the trim line" fix described
+  above was documented but not actually in the vector path — strips butted the
+  artwork exactly. Bleed strips are now drawn first and tuck 0.35mm under the
+  artwork, which is drawn on top.
+- Verified by re-running the real `processPdf` on the source rebuilt from the
+  faulty output: artwork now overshoots the trim by the full bleed on all four
+  sides (was −3.2mm), and the accepted `THEFT COVERAGE` design is not cropped and
+  produces identical page boxes.
+
 ### Misleading total-ink reading from registration marks
 **File:** `Zenova.pdf`
 A 400% TAC reading looked alarming until traced to the registration marks
