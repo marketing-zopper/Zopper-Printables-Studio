@@ -7,7 +7,11 @@ if (!supabaseUrl || !supabaseAnonKey) {
   console.warn('Supabase env vars are missing — copy .env.example to .env.local and fill in your project values.')
 }
 
-export const supabase = createClient(supabaseUrl, supabaseAnonKey)
+// PKCE keeps the Google sign-in result out of the URL hash (an auth code is
+// exchanged instead of tokens being returned in the redirect).
+export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+  auth: { flowType: 'pkce' },
+})
 
 export const ZOPPER_EMAIL_RE = /^[a-zA-Z0-9._%+-]+@zopper\.com$/i
 

@@ -42,7 +42,7 @@ function StepRow({ label, state, detail }) {
   )
 }
 
-export default function JobCard({ job, isOwner, onSizeChange, onConfirmSize, onUpdateOptions, onProcess, onDownload, onDelete }) {
+export default function JobCard({ job, canDelete, onSizeChange, onConfirmSize, onUpdateOptions, onProcess, onDownload, onDelete }) {
   const [expanded, setExpanded] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
   const [downloading, setDownloading] = useState(false)
@@ -87,7 +87,7 @@ export default function JobCard({ job, isOwner, onSizeChange, onConfirmSize, onU
         <button onClick={() => setExpanded((v) => !v)} className="text-zink/30 hover:text-zink/60">
           {expanded ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
         </button>
-        {(isOwner === undefined || isOwner) && (
+        {canDelete && (
           <div className="relative" ref={menuRef}>
             <button
               onClick={() => setMenuOpen((v) => !v)}

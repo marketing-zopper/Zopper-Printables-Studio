@@ -1,3 +1,7 @@
+-- NOTE: this file is the ORIGINAL baseline. Access rules were later moved behind the
+-- server (/api) — apply supabase/migrations/20261116_rbac_lockdown.sql after it.
+-- Rollback: supabase/migrations/20261116_rbac_lockdown_rollback.sql
+
 -- Zopper Printables Studio — Supabase schema
 -- Run this once in the Supabase SQL Editor (Dashboard -> SQL Editor -> New query).
 -- Safe to re-run: uses IF NOT EXISTS / CREATE OR REPLACE / DROP ... IF EXISTS throughout.

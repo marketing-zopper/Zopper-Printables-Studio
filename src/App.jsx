@@ -12,7 +12,7 @@ import SpecModal from './components/SpecModal'
 import SpecContent from './components/SpecContent'
 import ProfilePanel from './components/ProfilePanel'
 import { inspectPdf, processPdf } from './lib/pdfEngine'
-import { saveFinishedJob, deleteFinishedJob, loadFinishedJobs, downloadJobPdf, subscribeToJobs } from './lib/jobStore'
+import { saveFinishedJob, deleteFinishedJob, loadFinishedJobs, downloadJobPdf, pollJobs } from './lib/jobStore'
 import { loadIccProfile } from './lib/profileStore'
 import { loadDefaultIccProfile } from './lib/defaultProfile'
 import ColorProfileCard from './components/ColorProfileCard'
@@ -38,11 +38,22 @@ function rowToJob(row) {
     pdfPath: row.pdf_path,
     error: null,
     createdAt: new Date(row.created_at).getTime(),
+    fromServer: true,
   }
 }
 
+function ReadOnlyNotice() {
+  return (
+    <div className="glass-card rounded-3xl shadow-card p-5 text-xs text-zink/55 leading-relaxed">
+      You have <span className="font-semibold text-zink/70">Viewer</span> access: you can browse and download everyone's
+      finished jobs. Creating or deleting jobs needs an Editor or Admin role in Zopper Marketing Studio.
+    </div>
+  )
+}
+
 export default function App() {
-  const { user, profile } = useAuth()
+  const { user, profile, can } = useAuth()
+  const canCreate = can('create')
   const [active, setActive] = useState('dashboard')
   const [query, setQuery] = useState('')
   const [jobs, setJobs] = useState([])
@@ -57,33 +68,34 @@ export default function App() {
     hydrated.current = true
     loadIccProfile().then((record) => setIccProfile(record))
     loadFinishedJobs()
-      .then((rows) => {
-        const restored = rows.map(rowToJob)
-        setJobs((prev) => {
-          const existingIds = new Set(prev.map((j) => j.id))
-          return [...restored.filter((j) => !existingIds.has(j.id)), ...prev]
-        })
-      })
+      .then(syncFromServer)
       .catch((err) => console.error('Could not load job history:', err))
       .finally(() => setHistoryLoaded(true))
   }, [])
 
-  useEffect(() => {
-    return subscribeToJobs({
-      onInsert: (row) => {
-        setJobs((prev) => (prev.some((j) => j.id === row.id) ? prev : [rowToJob(row), ...prev]))
-      },
-      onDelete: (row) => {
-        setJobs((prev) => prev.filter((j) => j.id !== row.id))
-      },
+  // Teammates' new and deleted jobs show up without a manual refresh.
+  useEffect(() => pollJobs(syncFromServer), [])
+
+  function syncFromServer(rows) {
+    const serverIds = new Set(rows.map((r) => r.id))
+    setJobs((prev) => {
+      const known = new Set(prev.map((j) => j.id))
+      // Drop saved jobs that were deleted elsewhere; the grace period keeps a job
+      // we just saved from vanishing if a poll started before it was recorded.
+      const kept = prev.filter(
+        (j) => !(j.status === 'done' && j.pdfPath && !serverIds.has(j.id) && (j.fromServer || Date.now() - (j.savedAt || 0) > 60000)),
+      )
+      const added = rows.filter((r) => !known.has(r.id)).map(rowToJob)
+      return added.length || kept.length !== prev.length ? [...added, ...kept] : prev
     })
-  }, [])
+  }
 
   const patchJob = (id, patch) => {
     setJobs((prev) => prev.map((j) => (j.id === id ? { ...j, ...(typeof patch === 'function' ? patch(j) : patch) } : j)))
   }
 
   const handleFiles = (files) => {
+    if (!canCreate) return
     files.forEach((file) => {
       const id = makeJobId()
       const job = {
@@ -174,16 +186,13 @@ export default function App() {
       try {
         const pdfPath = await saveFinishedJob({
           id,
-          userId: user.id,
-          createdByName: profile?.full_name || user.email,
-          createdByEmail: user.email,
           name: job.name,
           sizeInfo,
           options: job.options,
           report,
           pdfBytes: bytes,
         })
-        patchJob(id, { pdfPath })
+        patchJob(id, { pdfPath, savedAt: Date.now() })
       } catch (saveErr) {
         console.error('Could not save job to shared history:', saveErr)
         patchJob(id, (j) => ({
@@ -201,7 +210,7 @@ export default function App() {
 
     let { downloadUrl } = job
     if (!downloadUrl) {
-      const bytes = job.result?.bytes || (await downloadJobPdf(job.pdfPath))
+      const bytes = job.result?.bytes || (await downloadJobPdf(job.id))
       const blob = new Blob([bytes], { type: 'application/pdf' })
       downloadUrl = URL.createObjectURL(blob)
       patchJob(id, (j) => ({ result: { ...j.result, bytes }, downloadUrl }))
@@ -217,18 +226,24 @@ export default function App() {
 
   const handleDelete = async (id) => {
     const job = jobs.find((j) => j.id === id)
+    // Saved jobs are deleted on the server first (it enforces who may delete
+    // what); only then do they leave the list.
+    if (job?.pdfPath || job?.status === 'done') {
+      try {
+        await deleteFinishedJob(id)
+      } catch (err) {
+        if (err.status !== 404) {
+          console.error('Could not delete job:', err)
+          window.alert(err.message || 'Could not delete this job.')
+          return
+        }
+      }
+    }
     setJobs((prev) => {
       const target = prev.find((j) => j.id === id)
       if (target?.downloadUrl) URL.revokeObjectURL(target.downloadUrl)
       return prev.filter((j) => j.id !== id)
     })
-    if (job?.pdfPath || job?.status === 'done') {
-      try {
-        await deleteFinishedJob(id, job.pdfPath)
-      } catch (err) {
-        console.error('Could not delete job:', err)
-      }
-    }
   }
 
   const doneJobs = jobs.filter((j) => j.status === 'done').sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
@@ -243,7 +258,7 @@ export default function App() {
 
   const jobCardProps = (job) => ({
     job,
-    isOwner: !job.userId || job.userId === user?.id,
+    canDelete: can('deleteAny') || (can('deleteOwn') && (!job.userId || job.userId === user?.id)),
     onSizeChange: handleSizeChange,
     onConfirmSize: handleConfirmSize,
     onUpdateOptions: handleUpdateOptions,
@@ -271,13 +286,15 @@ export default function App() {
 
               <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                 <div className="lg:col-span-2 space-y-4">
-                  <UploadZone onFiles={handleFiles} />
+                  {canCreate ? <UploadZone onFiles={handleFiles} /> : <ReadOnlyNotice />}
                   {doneJobs.slice(0, 3).map((job) => (
                     <JobCard key={job.id} {...jobCardProps(job)} />
                   ))}
                   {historyLoaded && doneJobs.length === 0 && (
                     <p className="text-xs text-zink/40 text-center py-6">
-                      No completed jobs yet — drop a PDF above, finish processing it on the Upload page, and it'll show up here.
+                      {canCreate
+                        ? "No completed jobs yet — drop a PDF above, finish processing it on the Upload page, and it'll show up here."
+                        : 'No completed jobs yet.'}
                     </p>
                   )}
                 </div>
@@ -291,12 +308,12 @@ export default function App() {
 
           {active === 'upload' && (
             <div className="max-w-3xl mx-auto space-y-4">
-              <UploadZone onFiles={handleFiles} />
+              {canCreate ? <UploadZone onFiles={handleFiles} /> : <ReadOnlyNotice />}
               {jobs.map((job) => (
                 <JobCard key={job.id} {...jobCardProps(job)} />
               ))}
               {jobs.length === 0 && (
-                <p className="text-xs text-zink/40 text-center py-6">No files yet — drop a PDF above to get started.</p>
+                <p className="text-xs text-zink/40 text-center py-6">{canCreate ? 'No files yet — drop a PDF above to get started.' : 'No finished jobs yet.'}</p>
               )}
             </div>
           )}
